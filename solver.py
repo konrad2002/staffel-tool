@@ -5,6 +5,7 @@ import json
 import math
 import sys
 import time
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional, Sequence, Tuple
@@ -155,6 +156,14 @@ def main(argv: Sequence[str]) -> int:
         best_assignment: Optional[List[int]] = None
         nodes_explored = 0
         last_update = 0.0
+        start_time = time.monotonic()
+        status_lock = threading.Lock()
+        stop_event = threading.Event()
+        status_state = {
+            'phase': 'preparing',
+            'progress': 6.0,
+            'message': 'Kandidatenlisten werden vorbereitet.',
+        }
 
         band_targets, _membership = build_band_info(condition_config, athletes, competition_year)
         band_counts = [0] * len(band_targets)
@@ -163,14 +172,44 @@ def main(argv: Sequence[str]) -> int:
         male_max_age_sum = int(condition_config.get('maleMaxAgeSum', 0)) if condition == 'gender_age_sum' else 0
         female_max_age_sum = int(condition_config.get('femaleMaxAgeSum', 0)) if condition == 'gender_age_sum' else 0
 
-        def status_update(phase: str, progress: float, message: str) -> None:
-            write_json(status_path, {
-                'done': False,
-                'phase': phase,
+        def elapsed_ms() -> int:
+            return int((time.monotonic() - start_time) * 1000)
+
+        def status_payload(done: bool = False, extra: Optional[dict] = None) -> dict:
+            with status_lock:
+                state = dict(status_state)
+            progress = float(state['progress'])
+            if not done and state['phase'] in {'preparing', 'searching'}:
+                progress = max(progress, min(95.0, 6.0 + (elapsed_ms() / 1000.0) * 0.25))
+            payload = {
+                'done': done,
+                'phase': state['phase'],
                 'progress': round(progress, 2),
-                'message': message,
+                'message': state['message'],
                 'nodesExplored': nodes_explored,
-            })
+                'elapsedMs': elapsed_ms(),
+                'elapsedLabel': format_time(elapsed_ms()),
+            }
+            if not done:
+                payload['message'] = f"{payload['message']} · Laufzeit {payload['elapsedLabel']}"
+            if extra:
+                payload.update(extra)
+            return payload
+
+        def status_update(phase: str, progress: float, message: str) -> None:
+            with status_lock:
+                status_state['phase'] = phase
+                status_state['progress'] = progress
+                status_state['message'] = message
+            write_json(status_path, status_payload(False))
+
+        def heartbeat() -> None:
+            while not stop_event.wait(1.0):
+                write_json(status_path, status_payload(False))
+
+        heartbeat_thread = threading.Thread(target=heartbeat, daemon=True)
+        heartbeat_thread.start()
+        status_update('vorbereitung', 6.0, 'Kandidatenlisten werden vorbereitet.')
 
         def remaining_band_capacity(used: List[bool]) -> List[int]:
             capacity = [0] * len(band_targets)
@@ -233,10 +272,11 @@ def main(argv: Sequence[str]) -> int:
             now = time.monotonic()
             if now - last_update >= 0.4:
                 progress = min(95.0, 10.0 + 85.0 * (nodes_explored / total_leaves))
+                status_message = f'Es werden {nodes_explored:,} Knoten geprüft. Beste bekannte Zeit: {format_time(int(best_time)) if math.isfinite(best_time) else "n/a"}.'
                 status_update(
                     'searching',
                     progress,
-                    f'Explored {nodes_explored:,} nodes. Best known total: {format_time(int(best_time)) if math.isfinite(best_time) else "n/a"}.'
+                    status_message,
                 )
                 last_update = now
 
@@ -284,8 +324,9 @@ def main(argv: Sequence[str]) -> int:
                 chosen_by_slot[slot_index] = None
                 used[athlete_index] = False
 
-            status_update('vorbereitung', 6.0, 'Kandidatenlisten werden vorbereitet.')
         recurse(0, [False] * len(athletes), [None] * len(layout), 0, 0, 0, 0, 0, 0)
+        stop_event.set()
+        heartbeat_thread.join(timeout=2.0)
 
         if best_assignment is None:
             result = {
@@ -293,6 +334,8 @@ def main(argv: Sequence[str]) -> int:
                 'status': 'no_solution',
                 'message': 'Es konnte keine gültige Staffelzuordnung gefunden werden.',
                 'nodesExplored': nodes_explored,
+                'elapsedMs': elapsed_ms(),
+                'elapsedLabel': format_time(elapsed_ms()),
             }
             write_json(status_path, {
                 'done': True,
@@ -300,6 +343,8 @@ def main(argv: Sequence[str]) -> int:
                 'progress': 100,
                 'message': result['message'],
                 'nodesExplored': nodes_explored,
+                'elapsedMs': elapsed_ms(),
+                'elapsedLabel': format_time(elapsed_ms()),
             })
             write_json(result_path, result)
             return 0
@@ -330,6 +375,8 @@ def main(argv: Sequence[str]) -> int:
             'message': 'Optimale Zuordnung gefunden.',
             'totalTimeMs': int(best_time),
             'totalTime': format_time(int(best_time)),
+            'elapsedMs': elapsed_ms(),
+            'elapsedLabel': format_time(elapsed_ms()),
             'nodesExplored': nodes_explored,
             'assignments': assignments,
         }
@@ -341,20 +388,29 @@ def main(argv: Sequence[str]) -> int:
             'message': result['message'],
             'nodesExplored': nodes_explored,
             'bestTimeMs': int(best_time),
+            'elapsedMs': result['elapsedMs'],
+            'elapsedLabel': result['elapsedLabel'],
         })
         write_json(result_path, result)
+        stop_event.set()
+        heartbeat_thread.join(timeout=2.0)
         return 0
     except Exception as exc:
+        stop_event.set()
         write_json(status_path, {
             'done': True,
             'phase': 'error',
             'progress': 100,
             'message': str(exc),
+            'elapsedMs': elapsed_ms() if 'elapsed_ms' in locals() else 0,
+            'elapsedLabel': format_time(elapsed_ms()) if 'elapsed_ms' in locals() else '0:00,00',
         })
         write_json(result_path, {
             'ok': False,
             'status': 'error',
             'message': str(exc),
+            'elapsedMs': elapsed_ms() if 'elapsed_ms' in locals() else 0,
+            'elapsedLabel': format_time(elapsed_ms()) if 'elapsed_ms' in locals() else '0:00,00',
         })
         print(str(exc), file=sys.stderr)
         return 1

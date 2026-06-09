@@ -534,12 +534,17 @@ function renderResult(result) {
 		accumulator[key] = (accumulator[key] || 0) + 1;
 		return accumulator;
 	}, {});
+	const elapsedLabel = result.elapsedLabel || (Number.isFinite(result.elapsedMs) ? formatTime(result.elapsedMs) : '-');
 
 	resultView.innerHTML = `
 		<div class="summary-grid">
 			<div class="summary-card accent">
 				<div class="summary-label">Gesamtzeit</div>
 				<div class="summary-value">${escapeHtmlText(result.totalTime || '-')}</div>
+			</div>
+			<div class="summary-card">
+				<div class="summary-label">Berechnungszeit</div>
+				<div class="summary-value">${escapeHtmlText(elapsedLabel)}</div>
 			</div>
 			<div class="summary-card">
 				<div class="summary-label">Zugeordnete Starts</div>
@@ -557,7 +562,7 @@ function renderResult(result) {
 			</div>
 			<div class="detail-card">
 				<div class="summary-label">Status</div>
-				<div class="detail-text">Optimale Zuordnung gefunden.</div>
+				<div class="detail-text">Optimale Zuordnung gefunden. Berechnungszeit: ${escapeHtmlText(elapsedLabel)}.</div>
 			</div>
 		</div>
 		<div class="table-card">
@@ -590,17 +595,18 @@ function pollJob(jobId) {
 
 			const status = data.status || {};
 			const result = data.result || null;
+			const elapsedLabel = status.elapsedLabel || result?.elapsedLabel || (Number.isFinite(status.elapsedMs) ? formatTime(status.elapsedMs) : '');
 			setProgress(
 				typeof status.progress === 'number' ? status.progress : pulse,
 				status.phase === 'searching' ? 'Suche' : (status.phase === 'preparing' ? 'Vorbereitung' : (status.phase === 'finished' ? 'Fertig' : (status.phase === 'error' ? 'Fehler' : 'Läuft'))),
-				status.message || 'Läuft...'
+				elapsedLabel ? `${status.message || 'Läuft...'} · ${elapsedLabel}` : (status.message || 'Läuft...')
 			);
 
 			if (status.done) {
 				clearInterval(pollTimer);
 				pollTimer = null;
 				solveButton.disabled = false;
-				setProgress(100, 'Fertig', status.message || 'Die Berechnung ist abgeschlossen.');
+				setProgress(100, 'Fertig', result?.elapsedLabel ? `Die Berechnung ist abgeschlossen. Dauer: ${result.elapsedLabel}.` : (status.message || 'Die Berechnung ist abgeschlossen.'));
 				renderResult(result || {});
 			} else {
 				pulse = Math.min(95, pulse + 2);
