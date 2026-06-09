@@ -238,7 +238,7 @@ function athleteRow(array $styleNames, array $data = []): string
 
 	$html = '<tr class="athlete-row">';
 	$html .= '<td><input class="field-name" type="text" value="' . $name . '" placeholder="Name"></td>';
-	$html .= '<td><select class="field-gender"><option value="female"' . ($gender === 'female' ? ' selected' : '') . '>W</option><option value="male"' . ($gender === 'male' ? ' selected' : '') . '>M</option></select></td>';
+	$html .= '<td><select class="field-gender"><option value="female"' . ($gender === 'female' ? ' selected' : '') . '>W&nbsp;</option><option value="male"' . ($gender === 'male' ? ' selected' : '') . '>M&nbsp;</option></select></td>';
 	$html .= '<td><input class="field-birthyear" type="number" min="1900" max="2100" value="' . $birthYear . '" placeholder="2011"></td>';
 	foreach ($styleNames as $index => $styleName) {
 		$time = h((string) ($times[$index] ?? ''));
@@ -312,7 +312,10 @@ $sampleAthletes = [
 						</div>
 						<div class="toolbar">
 							<button type="button" class="ghost" id="resetSample">Beispieldaten laden</button>
+								<button type="button" class="ghost" id="exportSettings">Einstellungen exportieren</button>
+								<button type="button" class="ghost" id="importSettings">Einstellungen importieren</button>
 							<button type="button" class="ghost" id="addRow">Zeile hinzufügen</button>
+								<input id="importSettingsFile" type="file" accept="application/json,.json" hidden>
 						</div>
 					</div>
 					<div class="table-wrap">
@@ -377,6 +380,9 @@ const competitionYearInput = document.getElementById('competitionYear');
 const solveButton = document.getElementById('solveButton');
 const addRowButton = document.getElementById('addRow');
 const resetSampleButton = document.getElementById('resetSample');
+const exportSettingsButton = document.getElementById('exportSettings');
+const importSettingsButton = document.getElementById('importSettings');
+const importSettingsFile = document.getElementById('importSettingsFile');
 const progressBar = document.getElementById('progressBar');
 const progressLabel = document.getElementById('progressLabel');
 const progressMessage = document.getElementById('progressMessage');
@@ -424,7 +430,7 @@ function rowMarkup(data = {}) {
 	const times = Array.isArray(data.times) ? data.times : Array(styleCount).fill('');
 	let cells = '';
 	cells += `<td><input class="name" type="text" value="${escapeHtml(data.name || '')}" placeholder="Name"></td>`;
-	cells += `<td><select class="gender"><option value="female"${data.gender === 'male' ? '' : ' selected'}>W</option><option value="male"${data.gender === 'male' ? ' selected' : ''}>M</option></select></td>`;
+	cells += `<td><select class="gender"><option value="female"${data.gender === 'male' ? '' : ' selected'}>W&nbsp;</option><option value="male"${data.gender === 'male' ? ' selected' : ''}>M&nbsp;</option></select></td>`;
 	cells += `<td><input class="birthYear" type="number" min="1900" max="2100" value="${escapeHtml(data.birthYear || '')}" placeholder="2011"></td>`;
 	for (let i = 0; i < styleCount; i++) {
 		cells += `<td><input class="time" type="text" value="${escapeHtml(times[i] || '')}" placeholder="0:32,10"></td>`;
@@ -446,6 +452,86 @@ function bindRowRemovers() {
 function loadRows(rows) {
 	athletesBody.innerHTML = rows.map((row) => rowMarkup(row)).join('');
 	bindRowRemovers();
+}
+
+function normalizeAthleteRows(athletes) {
+	if (!Array.isArray(athletes)) {
+		return [];
+	}
+
+	return athletes.map((athlete) => {
+		const times = Array.isArray(athlete.times) ? athlete.times : [];
+		const normalizedTimes = Array.from({ length: styleCount }, (_, index) => String(times[index] ?? ''));
+
+		return {
+			name: String(athlete.name ?? ''),
+			gender: athlete.gender === 'male' ? 'male' : 'female',
+			birthYear: String(athlete.birthYear ?? ''),
+			times: normalizedTimes,
+		};
+	});
+}
+
+function collectSettings() {
+	return {
+		layout: layoutInput.value.trim(),
+		condition: conditionSelect.value,
+		conditionConfig: conditionConfigInput.value.trim(),
+		competitionYear: competitionYearInput.value.trim(),
+		athletes: collectAthletes(),
+	};
+}
+
+function exportCurrentSettings() {
+	const settings = collectSettings();
+	const blob = new Blob([JSON.stringify(settings, null, 2)], { type: 'application/json;charset=utf-8' });
+	const url = URL.createObjectURL(blob);
+	const link = document.createElement('a');
+	link.href = url;
+	link.download = `staffel-einstellungen-${new Date().toISOString().slice(0, 10)}.json`;
+	document.body.appendChild(link);
+	link.click();
+	link.remove();
+	URL.revokeObjectURL(url);
+}
+
+function applyImportedSettings(settings) {
+	if (!settings || typeof settings !== 'object') {
+		throw new Error('Die importierte Datei enthält keine gültigen Einstellungen.');
+	}
+
+	const layout = settings.layout ?? settings.relay_layout;
+	if (Array.isArray(layout)) {
+		layoutInput.value = JSON.stringify(layout);
+	} else if (typeof layout === 'string' && layout.trim()) {
+		layoutInput.value = layout.trim();
+	}
+
+	const condition = String(settings.condition ?? '');
+	if (condition && Array.from(conditionSelect.options).some((option) => option.value === condition)) {
+		conditionSelect.value = condition;
+	}
+
+	const conditionConfig = settings.conditionConfig ?? settings.preset_params ?? {};
+	conditionConfigInput.value = typeof conditionConfig === 'string' ? conditionConfig : JSON.stringify(conditionConfig, null, 2);
+
+	const competitionYear = settings.competitionYear ?? settings.year;
+	if (competitionYear !== undefined && competitionYear !== null && String(competitionYear).trim() !== '') {
+		competitionYearInput.value = String(competitionYear);
+	}
+
+	const athletes = settings.athletes ?? settings.rows ?? [];
+	loadRows(normalizeAthleteRows(athletes));
+}
+
+async function importSettingsFromFile(file) {
+	if (!file) {
+		return;
+	}
+
+	const text = await file.text();
+	const settings = JSON.parse(text);
+	applyImportedSettings(settings);
 }
 
 function collectAthletes() {
@@ -626,9 +712,30 @@ addRowButton.addEventListener('click', () => {
 });
 
 resetSampleButton.addEventListener('click', () => loadRows(sampleAthletes));
+exportSettingsButton.addEventListener('click', exportCurrentSettings);
+importSettingsButton.addEventListener('click', () => importSettingsFile.click());
+importSettingsFile.addEventListener('change', async () => {
+	const [file] = importSettingsFile.files || [];
+	if (!file) {
+		return;
+	}
+
+	try {
+		await importSettingsFromFile(file);
+		setProgress(0, 'Bereit', 'Einstellungen wurden importiert.');
+	} catch (error) {
+		setProgress(0, 'Fehler', error.message);
+	} finally {
+		importSettingsFile.value = '';
+	}
+});
 solveButton.addEventListener('click', startSolve);
 
-loadRows(sampleAthletes);
+{
+	athletesBody.insertAdjacentHTML('beforeend', rowMarkup());
+	bindRowRemovers();
+}
+
 setProgress(0, 'Bereit', 'Warte auf einen Lauf.');
 </script>
 

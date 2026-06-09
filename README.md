@@ -114,6 +114,7 @@ Die Weboberfläche unterstützt:
 
 * Eingabe des Staffelaufbaus als JSON
 * Verwaltung der Athleten in Tabellenform
+* Export und Import der aktuellen Einstellungen als JSON-Datei
 * Auswahl verschiedener Regelvorlagen
 * Live-Anzeige des Berechnungsfortschritts
 
